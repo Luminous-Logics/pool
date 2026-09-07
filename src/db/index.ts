@@ -1,9 +1,26 @@
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
+import path from "path";
+import os from "os";
 
 const TURSO_URL = process.env.TURSO_DATABASE_URL || "libsql://survey-ananthu.aws-ap-south-1.turso.io";
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
+
+// Determine writable SQLite path for local fallback
+export function getFallbackDbUrl(): string {
+  // In serverless environments (e.g. Vercel, AWS Lambda /var/task), the working directory is read-only.
+  // /tmp is the only writable directory.
+  if (
+    process.env.VERCEL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.LAMBDA_TASK_ROOT ||
+    process.env.NODE_ENV === "production"
+  ) {
+    return `file:${path.join(os.tmpdir(), "survey_local.db")}`;
+  }
+  return "file:./survey_local.db";
+}
 
 let activeClient: Client;
 
@@ -15,16 +32,16 @@ function initClient(): Client {
         authToken: TURSO_AUTH_TOKEN,
       });
     } catch (e) {
-      console.warn("Failed to create remote Turso client, falling back to local:", e);
+      console.warn("Failed to create remote Turso client, falling back to local SQLite:", e);
     }
   }
 
   // If no auth token provided and remote is libsql://, Turso cloud requires a token.
-  // We can try remote first, but if token is missing or unauthorized, use local SQLite.
+  // Fall back to a writable local SQLite path.
   if (TURSO_URL.startsWith("libsql://") && !TURSO_AUTH_TOKEN) {
     console.log("No TURSO_AUTH_TOKEN provided for remote Turso. Using local SQLite fallback for seamless execution.");
     return createClient({
-      url: "file:./survey_local.db",
+      url: getFallbackDbUrl(),
     });
   }
 
@@ -95,7 +112,7 @@ export async function ensureTables() {
     console.warn("Error running schema on primary client:", err);
     try {
       console.log("Attempting fallback initialization on local SQLite...");
-      const localClient = createClient({ url: "file:./survey_local.db" });
+      const localClient = createClient({ url: getFallbackDbUrl() });
       for (const stmt of schemaStatements) {
         await localClient.execute(stmt);
       }
